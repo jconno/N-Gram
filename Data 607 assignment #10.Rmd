@@ -1,0 +1,390 @@
+---
+title: "Data 607 assignment 10"
+author: "Joe Connolly"
+date: "4/15/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE}
+library(janeaustenr)
+library(tidytext)
+library(dplyr)
+library(stringr)
+library(tidyr)
+library(ggplot2)
+library(wordcloud)
+library(reshape2)
+library(ngram)
+library(corpus)
+library(lexicon)
+library(kableExtra)
+library(formattable)
+library(knitr)
+library(gutenbergr)
+```
+
+## Reproducing code from Ch. 2
+==============================
+
+```{r}
+a <- get_sentiments("afinn")
+head(a, 5)
+```
+
+```{r}
+b <- get_sentiments("bing")
+head(b,5)
+```
+```{r}
+c <- get_sentiments("nrc")
+head(c,5)
+```
+
+## Sentiment Analysis with Inner Join
+======================================
+
+Removing the word "chapter"
+```{r}
+tidy_books <- austen_books() %>% 
+                             group_by(book) %>%
+                             mutate(
+                               linenumber = row_number(),
+                               chapter = cumsum(str_detect(text,
+                                                           regex("^chapter [\\divxlc]",
+                                                                 ignore_case = TRUE)))) %>%
+                             ungroup() %>%
+                             unnest_tokens(word, text)
+                             
+```
+
+What are the most common joy words in $Emma$?
+```{r}
+nrc_joy <- get_sentiments("nrc") %>%
+  filter(sentiment == 'joy')
+
+words_of_joy <- tidy_books %>% filter(book == "Emma") %>%
+  inner_join(nrc_joy) %>%
+  count(word, sort = TRUE)
+
+head(words_of_joy, 7)
+```
+
+## Comparing the difference of negative and positive sentiment 
+```{r}
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+## Graphing sentiment scores
+```{r}
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+## Comparing differences between all 3 sentiments
+
+```{r}
+pride_prejudice <- tidy_books %>%
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+```
+
+## Defining a broader area of text--spans multiple lines for 
+```{r, warning=FALSE}
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn")) %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing")) %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative"))
+    ) %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+## Binding and visualizing the sentiment differences
+```{r}
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+## Amount of positive and negative words
+```{r}
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+```
+
+```{r}
+get_sentiments("bing") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+```
+
+## Most common positive and negative words
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+head(bing_word_counts, 7)
+```
+
+Visualizing positive and negative word counts
+=============================================
+
+```{r}
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+Designating "miss" as a "stop word"
+===================================
+
+```{r}
+custom_stop_words <- bind_rows(tibble(word = c("miss"),  
+                                      lexicon = c("SMART")), 
+                               stop_words)
+
+head(custom_stop_words, 7)
+```
+
+Creating a word cloud of stop-words
+===================================
+
+```{r, warning=FALSE}
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+Arranging the word cloud
+========================
+
+```{r, warning=FALSE}
+tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("coral4", "goldenrod2"))
+```
+
+Tokenizing text into  sentences
+===============================
+
+```{r}
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+
+What chapter has the highest amount of negative words?
+======================================================
+
+```{r}
+bingnegative <- get_sentiments("bing") %>% 
+  filter(sentiment == "negative")
+
+wordcounts <- tidy_books %>%
+  group_by(book, chapter) %>%
+  summarize(words = n())
+
+tidy_books %>%
+  semi_join(bingnegative) %>%
+  group_by(book, chapter) %>%
+  summarize(negativewords = n()) %>%
+  left_join(wordcounts, by = c("book", "chapter")) %>%
+  mutate(ratio = negativewords/words) %>%
+  filter(chapter != 0) %>%
+  slice_max(ratio, n = 1) %>% 
+  ungroup()
+```
+
+New sentiment analyses
+=========================
+
+Question: Comparing quantities between positive and negative words, which Jane Austen novel seems more likely to be uplifting; "Mansfield Park", or "Persuasion"?
+
+```{r}
+mans <- tidy_books %>%
+  filter(book == "Mansfield Park")
+
+per <- tidy_books %>%
+  filter(book == "Persuasion")
+```
+
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+```
+
+```{r}
+positive_words <- bing_word_counts %>% 
+  filter(sentiment == "positive")
+
+head(positive_words, 3)
+
+negative_words <- bing_word_counts %>% 
+  filter(sentiment == "negative")
+
+head(negative_words, 3)
+```
+
+Cross referencing positive and negative words with Mansfield Park and Persuasion 
+================================================================================
+```{r}
+positive_mans <- positive_words %>% inner_join(mans, by = "word")
+
+positive_mans_gram <- ngram(positive_mans$word, n = 1)
+
+print(positive_mans_gram, output="truncated")
+print(positive_mans_gram, output="summary")
+```
+
+```{r}
+negative_mans <- negative_words %>% inner_join(mans, by = "word")
+negative_mans_gram <- ngram(negative_mans$word, n = 1)
+
+print(negative_mans_gram, output="truncated")
+print(negative_mans_gram, output="summary")
+```
+
+```{r}
+positive_persuasion <- positive_words %>% inner_join(per, by = "word")
+
+
+positive_persuasion <- ngram(positive_persuasion$word, n = 1)
+
+print(positive_persuasion, output="truncated")
+print(positive_persuasion, output="summary")
+```
+
+```{r}
+negative_persuasion <- negative_words %>% inner_join(per, by = "word")
+
+negative_persuasion <- ngram(negative_persuasion$word, n = 1)
+
+print(negative_persuasion, output="truncated")
+print(negative_persuasion, output="summary")
+```
+
+
+Alice in Wonderland: Positive and Negative Word frequency
+==========================================================
+
+```{r, warning=FALSE}
+Alice_in_Wonderland <- gutenberg_download(28885)
+```
+
+```{r}
+Alice_in_wonderland <- Alice_in_Wonderland %>% select(-gutenberg_id)
+head(Alice_in_wonderland, 100)
+```
+
+
+```{r}
+positive_words_4_Alice <- positive_words %>% 
+  filter(sentiment == "positive")
+
+head(positive_words_4_Alice, 3)
+```
+
+```{r}
+positive_words_4_Alice %>%
+  select(word, sentiment, n) %>%
+  arrange() %>% top_n(22, n) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col() + 
+  xlab(NULL) +
+  coord_flip() +
+  theme_classic() +
+  labs(x = "+  +", y = "Frequency", 
+       title = "Positive words: Alice in Wonderland")
+  
+```
+
+```{r}
+negative_words_4_Alice <- negative_words %>% 
+  filter(sentiment == "negative")
+
+head(negative_words_4_Alice, 3)
+```
+
+```{r}
+negative_words_4_Alice %>%
+  select(word, sentiment, n) %>%
+  arrange() %>% top_n(22, n) %>%
+  mutate(word = reorder(word,n)) %>%
+  ggplot(aes(x = word, y = n)) +
+  geom_col() + 
+  xlab(NULL) +
+  coord_flip() +
+  theme_classic() +
+  labs(x = "__ __ ", y = "Frequency", 
+       title = "Negative words: Alice in Wonderland")
+```
+
+
+Conclusion
+==========
+From the analysis performed and without having looked at any Jane Austen publications, one might gather that "Mansfield Park" has a much more negative tone than "Persuasion". One may also gather that the story of "Alison in Wonderland" is an uplifting story, with mostly feelings of being content.
+
+It's evident that stop words can certainly interfere with analysis. However, an argument can be made that not all stop words are necessarily negative, nor have equal weights--it's all contextual within the literature. To get a more accurate model, analyzing surrounding words of the corpus via Natural Language Processing would enhance accuracy of the analysis.
+
+
+
+Sources
+========
+https://stackoverflow.com/questions/37291984/find-the-most-frequently-occuring-words-in-a-text-in-r
+
+https://www.rdocumentation.org/packages/gutenbergr/versions/0.2.0/topics/gutenberg_download
+
+(inspiration) https://medium.com/analytics-vidhya/different-ways-of-visualizing-twitter-sentiments-analysis-in-r-270d5d459603
+
+https://frex1.github.io/twitter-sentiments/tweets
+
+https://www.rdocumentation.org/packages/formattable/versions/0.2.1/topics/color_tile
+
+(What worked best) https://towardsdatascience.com/twitter-sentiment-analysis-and-visualization-using-r-22e1f70f6967
